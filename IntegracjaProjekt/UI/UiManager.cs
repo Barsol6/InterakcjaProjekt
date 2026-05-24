@@ -9,19 +9,25 @@ public class UiManager
 {
     private readonly DatabaseService _dbService;
     private readonly EurostatApiService _apiService;
-    private readonly ExportService _exportService;
+    private readonly FileTransferService _fileTransferService;
+    private readonly AuthService _authService;
+    private readonly SoapApiService _soapService; 
+    
+    private string _jwtToken = string.Empty;
 
     public UiManager()
     {
         _dbService = new DatabaseService();
         _apiService = new EurostatApiService();
-        _exportService = new ExportService();
+        _fileTransferService = new FileTransferService();
+        _authService = new AuthService();
+        _soapService = new SoapApiService();
     }
 
     public async Task StartAsync()
     {
         ShowWelcomeScreen();
-        PerformLogin();
+        PerformLogin(); 
         await MainMenuLoopAsync();
     }
 
@@ -40,7 +46,6 @@ public class UiManager
 
     private void PerformLogin()
     {
-        var authService = new AuthService();
         bool isAuthenticated = false;
 
         while (!isAuthenticated)
@@ -49,11 +54,16 @@ public class UiManager
             var password = AnsiConsole.Prompt(
                 new TextPrompt<string>("Podaj [red]hasło[/]:").Secret());
 
-            isAuthenticated = authService.Login(username, password);
+            var token = _authService.LoginAndGetToken(username, password);
 
-            if (!isAuthenticated)
+            if (string.IsNullOrEmpty(token))
             {
                 AnsiConsole.MarkupLine("[red]Nieprawidłowy login lub hasło! Spróbuj ponownie.[/]\n");
+            }
+            else
+            {
+                _jwtToken = token;
+                isAuthenticated = true;
             }
         }
     }
@@ -64,30 +74,43 @@ public class UiManager
         {
             Console.Clear();
             ShowWelcomeScreen();
-            AnsiConsole.MarkupLine($"Zalogowano jako: [bold green]{AuthService.CurrentUser?.Username}[/] (Rola: [blue]{AuthService.CurrentUser?.Role}[/])\n");
+            
+            string currentUsername = _authService.GetUsernameFromToken(_jwtToken);
+            string currentRole = _authService.GetRoleFromToken(_jwtToken);
+            
+            AnsiConsole.MarkupLine($"Zalogowano jako: [bold green]{currentUsername}[/] (Rola: [blue]{currentRole}[/])");
+            
+            AnsiConsole.MarkupLine($"[grey]Aktywny token JWT: {_jwtToken.Substring(0, 25)}...[/]\n");
 
             var action = AnsiConsole.Prompt(
                 new SelectionPrompt<string>()
                     .Title("[yellow]Wybierz akcję:[/]")
-                    .PageSize(7)
+                    .PageSize(10)
                     .AddChoices(new[] {
                         "1. Pobierz nowe dane (REST API) -> Zapisz do DB",
                         "2. Przeglądaj dane z bazy (Tabela)",
-                        "3. Generuj WYKRESY (Analiza wizualna)", // <-- NOWA OPCJA
+                        "3. Generuj WYKRESY (Analiza wizualna)",
                         "4. Eksportuj dane do JSON",
                         "5. Eksportuj dane do XML",
-                        "6. Wyloguj i zakończ"
+                        "6. Importuj dane z JSON -> Zapisz do DB",
+                        "7. Importuj dane z XML -> Zapisz do DB",
+                        "8. Sprawdź szczegóły państwa (SOAP API)",
+                        "9. Wyloguj i zakończ"
                     }));
 
             try
             {
                 if (action.StartsWith("1")) await HandleDownloadAsync();
                 else if (action.StartsWith("2")) await HandleViewDataAsync();
-                else if (action.StartsWith("3")) await HandleChartAsync(); // <-- NOWA AKCJA
+                else if (action.StartsWith("3")) await HandleChartAsync();
                 else if (action.StartsWith("4")) await HandleExportJsonAsync();
                 else if (action.StartsWith("5")) await HandleExportXmlAsync();
-                else if (action.StartsWith("6")) return;
+                else if (action.StartsWith("6")) await HandleImportJsonAsync();
+                else if (action.StartsWith("7")) await HandleImportXmlAsync();
+                else if (action.StartsWith("8")) await HandleSoapRequestAsync(); 
+                else if (action.StartsWith("9")) return;
             }
+            // ... (reszta bloku catch pozostaje bez zmian)
             catch (Exception ex)
             {
                 AnsiConsole.MarkupLine($"[bold red]Wystąpił błąd krytyczny:[/] {ex.Message}");
@@ -99,9 +122,9 @@ public class UiManager
 
     private async Task HandleDownloadAsync()
     {
-        if (!AuthService.IsAdmin())
+        if (!_authService.IsAdminFromToken(_jwtToken))
         {
-            AnsiConsole.MarkupLine("[red]Błąd: Brak uprawnień. Tylko Admin może pobierać dane z REST API.[/]");
+            AnsiConsole.MarkupLine("[red]Błąd: Twój token JWT nie posiada uprawnień Admina. Odmowa dostępu.[/]");
             WaitForKey();
             return;
         }
@@ -114,7 +137,7 @@ public class UiManager
                 await _dbService.SaveExpendituresAsync(newData);
             });
         
-        AnsiConsole.MarkupLine("[green]Zakończono sukcesem! Dane zaktualizowane.[/]");
+        AnsiConsole.MarkupLine("[green]Zakończono sukcesem! Dane zaktualizowane z API.[/]");
         WaitForKey();
     }
 
@@ -221,7 +244,7 @@ public class UiManager
     private async Task HandleExportJsonAsync()
     {
         var dataToJson = await _dbService.GetExpendituresAsync();
-        _exportService.ExportToJson(dataToJson);
+        _fileTransferService.ExportToJson(dataToJson);
         AnsiConsole.MarkupLine("[green]Wyeksportowano do pliku raport_eurostat.json[/]");
         WaitForKey();
     }
@@ -229,8 +252,92 @@ public class UiManager
     private async Task HandleExportXmlAsync()
     {
         var dataToXml = await _dbService.GetExpendituresAsync();
-        _exportService.ExportToXml(dataToXml);
+        _fileTransferService.ExportToXml(dataToXml);
         AnsiConsole.MarkupLine("[green]Wyeksportowano do pliku raport_eurostat.xml[/]");
+        WaitForKey();
+    }
+
+    private async Task HandleImportJsonAsync()
+    {
+        if (!_authService.IsAdminFromToken(_jwtToken))
+        {
+            AnsiConsole.MarkupLine("[red]Błąd: Twój token JWT nie posiada uprawnień Admina. Odmowa dostępu.[/]");
+            WaitForKey();
+            return;
+        }
+
+        try
+        {
+            var importedData = _fileTransferService.ImportFromJson();
+            await AnsiConsole.Status().StartAsync("Odtwarzanie bazy z pliku JSON...", async ctx => 
+            {
+                await _dbService.SaveExpendituresAsync(importedData);
+            });
+            AnsiConsole.MarkupLine($"[green]Sukces! Zaimportowano {importedData.Count} rekordów z pliku JSON do bazy danych.[/]");
+        }
+        catch (FileNotFoundException ex)
+        {
+            AnsiConsole.MarkupLine($"[yellow]{ex.Message}[/]");
+        }
+        WaitForKey();
+    }
+
+    private async Task HandleImportXmlAsync()
+    {
+        if (!_authService.IsAdminFromToken(_jwtToken))
+        {
+            AnsiConsole.MarkupLine("[red]Błąd: Twój token JWT nie posiada uprawnień Admina. Odmowa dostępu.[/]");
+            WaitForKey();
+            return;
+        }
+
+        try
+        {
+            var importedData = _fileTransferService.ImportFromXml();
+            await AnsiConsole.Status().StartAsync("Odtwarzanie bazy z pliku XML...", async ctx => 
+            {
+                await _dbService.SaveExpendituresAsync(importedData);
+            });
+            AnsiConsole.MarkupLine($"[green]Sukces! Zaimportowano {importedData.Count} rekordów z pliku XML do bazy danych.[/]");
+        }
+        catch (FileNotFoundException ex)
+        {
+            AnsiConsole.MarkupLine($"[yellow]{ex.Message}[/]");
+        }
+        WaitForKey();
+    }
+    
+    private async Task HandleSoapRequestAsync()
+    {
+        var countryCode = AnsiConsole.Ask<string>("Podaj 2-literowy [green]kod państwa[/] (np. PL, DE, FR):").ToUpper();
+
+        try
+        {
+            await AnsiConsole.Status().StartAsync("Łączenie z usługą SOAP...", async ctx =>
+            {
+                var details = await _soapService.GetCountryDetailsAsync(countryCode);
+
+                var grid = new Grid();
+                grid.AddColumn(new GridColumn().NoWrap());
+                grid.AddColumn(new GridColumn().Padding(2, 0, 0, 0));
+                
+                grid.AddRow("[grey]Kraj:[/]", $"[bold green]{details.Name}[/]");
+                grid.AddRow("[grey]Stolica:[/]", $"[bold yellow]{details.Capital}[/]");
+                grid.AddRow("[grey]Waluta:[/]", $"[bold blue]{details.Currency}[/]");
+
+                var panel = new Panel(grid)
+                    .Header($"[bold white] SOAP API: Właściwości {countryCode} [/]")
+                    .BorderColor(Color.SteelBlue)
+                    .Padding(1, 1, 1, 1);
+
+                AnsiConsole.Write(panel);
+            });
+        }
+        catch (Exception ex)
+        {
+            AnsiConsole.MarkupLine($"[red]Błąd pobierania danych SOAP:[/] {ex.Message}");
+        }
+
         WaitForKey();
     }
 

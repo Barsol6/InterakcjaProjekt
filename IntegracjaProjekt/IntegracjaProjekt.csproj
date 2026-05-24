@@ -10,6 +10,7 @@
     <ItemGroup>
       <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="10.0.8" />
       <PackageReference Include="Spectre.Console" Version="0.55.2" />
+      <PackageReference Include="System.IdentityModel.Tokens.Jwt" Version="8.18.0" />
     </ItemGroup>
 
 </Project>
