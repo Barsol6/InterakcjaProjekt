@@ -1,4 +1,3 @@
-using IntegracjaProjekt.Data;
 using IntegracjaProjekt.Models;
 using IntegracjaProjekt.Services;
 using Spectre.Console;
@@ -9,9 +8,10 @@ public class UiManager
 {
     private readonly DatabaseService _dbService;
     private readonly EurostatApiService _apiService;
+    private readonly WorldBankApiService _wbApiService;
     private readonly FileTransferService _fileTransferService;
     private readonly AuthService _authService;
-    private readonly SoapApiService _soapService; 
+    private readonly SoapApiService _soapService;
     
     private string _jwtToken = string.Empty;
 
@@ -19,6 +19,7 @@ public class UiManager
     {
         _dbService = new DatabaseService();
         _apiService = new EurostatApiService();
+        _wbApiService = new WorldBankApiService();
         _fileTransferService = new FileTransferService();
         _authService = new AuthService();
         _soapService = new SoapApiService();
@@ -27,19 +28,19 @@ public class UiManager
     public async Task StartAsync()
     {
         ShowWelcomeScreen();
-        PerformLogin(); 
+        PerformLogin();
         await MainMenuLoopAsync();
     }
 
     private void ShowWelcomeScreen()
     {
         AnsiConsole.Write(
-            new FigletText("Eurostat API")
+            new FigletText("Data Integrator")
                 .Centered()
                 .Color(Color.Blue));
         AnsiConsole.Write(
             new Align(
-                new Markup("[bold grey]Wydatki Wojskowe - System Integracyjny[/]\n"), 
+                new Markup("[bold grey]Wydatki Wojskowe - Eurostat, World Bank & SOAP API[/]\n"), 
                 HorizontalAlignment.Center
             ));
     }
@@ -79,38 +80,38 @@ public class UiManager
             string currentRole = _authService.GetRoleFromToken(_jwtToken);
             
             AnsiConsole.MarkupLine($"Zalogowano jako: [bold green]{currentUsername}[/] (Rola: [blue]{currentRole}[/])");
-            
             AnsiConsole.MarkupLine($"[grey]Aktywny token JWT: {_jwtToken.Substring(0, 25)}...[/]\n");
 
             var action = AnsiConsole.Prompt(
                 new SelectionPrompt<string>()
-                    .Title("[yellow]Wybierz akcję:[/]")
-                    .PageSize(10)
+                    .Title("[yellow]Wybierz akcję z systemu rozproszonego:[/]")
+                    .PageSize(12)
                     .AddChoices(new[] {
-                        "1. Pobierz nowe dane (REST API) -> Zapisz do DB",
-                        "2. Przeglądaj dane z bazy (Tabela)",
-                        "3. Generuj WYKRESY (Analiza wizualna)",
-                        "4. Eksportuj dane do JSON",
-                        "5. Eksportuj dane do XML",
-                        "6. Importuj dane z JSON -> Zapisz do DB",
-                        "7. Importuj dane z XML -> Zapisz do DB",
-                        "8. Sprawdź szczegóły państwa (SOAP API)",
-                        "9. Wyloguj i zakończ"
+                        "1. Pobierz nowe dane (EUROSTAT REST API)",
+                        "2. Pobierz nowe dane (WORLD BANK REST API)",
+                        "3. Przeglądaj połączone dane z bazy (Tabela)",
+                        "4. Generuj WYKRESY (Porównanie Eurostat vs WorldBank)",
+                        "5. Eksportuj całą bazę do pliku JSON",
+                        "6. Eksportuj całą bazę do pliku XML",
+                        "7. Importuj dane z JSON -> Odtwórz w bazie",
+                        "8. Importuj dane z XML -> Odtwórz w bazie",
+                        "9. Sprawdź szczegóły państwa (SOAP API)",
+                        "0. Wyloguj i zakończ"
                     }));
 
             try
             {
-                if (action.StartsWith("1")) await HandleDownloadAsync();
-                else if (action.StartsWith("2")) await HandleViewDataAsync();
-                else if (action.StartsWith("3")) await HandleChartAsync();
-                else if (action.StartsWith("4")) await HandleExportJsonAsync();
-                else if (action.StartsWith("5")) await HandleExportXmlAsync();
-                else if (action.StartsWith("6")) await HandleImportJsonAsync();
-                else if (action.StartsWith("7")) await HandleImportXmlAsync();
-                else if (action.StartsWith("8")) await HandleSoapRequestAsync(); 
-                else if (action.StartsWith("9")) return;
+                if (action.StartsWith("1")) await HandleDownloadEurostatAsync();
+                else if (action.StartsWith("2")) await HandleDownloadWorldBankAsync();
+                else if (action.StartsWith("3")) await HandleViewDataAsync();
+                else if (action.StartsWith("4")) await HandleChartAsync();
+                else if (action.StartsWith("5")) await HandleExportJsonAsync();
+                else if (action.StartsWith("6")) await HandleExportXmlAsync();
+                else if (action.StartsWith("7")) await HandleImportJsonAsync();
+                else if (action.StartsWith("8")) await HandleImportXmlAsync();
+                else if (action.StartsWith("9")) await HandleSoapRequestAsync();
+                else if (action.StartsWith("0")) return;
             }
-            // ... (reszta bloku catch pozostaje bez zmian)
             catch (Exception ex)
             {
                 AnsiConsole.MarkupLine($"[bold red]Wystąpił błąd krytyczny:[/] {ex.Message}");
@@ -119,8 +120,9 @@ public class UiManager
         }
     }
 
+    // --- LOGIKA AKCJI MENU ---
 
-    private async Task HandleDownloadAsync()
+    private async Task HandleDownloadEurostatAsync()
     {
         if (!_authService.IsAdminFromToken(_jwtToken))
         {
@@ -130,14 +132,35 @@ public class UiManager
         }
 
         await AnsiConsole.Status()
-            .StartAsync("Pobieranie i zapisywanie danych z Eurostatu...", async ctx => 
+            .StartAsync("Pobieranie danych z Eurostat REST API...", async ctx => 
             {
                 var newData = await _apiService.FetchMilitaryDataAsync();
                 ctx.Status("Zapis do bazy (Transakcja Serializable)...");
-                await _dbService.SaveExpendituresAsync(newData);
+                await _dbService.SaveExpendituresAsync(newData, "Eurostat");
             });
         
-        AnsiConsole.MarkupLine("[green]Zakończono sukcesem! Dane zaktualizowane z API.[/]");
+        AnsiConsole.MarkupLine("[green]Zakończono sukcesem! Dane Eurostat zostały zaktualizowane.[/]");
+        WaitForKey();
+    }
+
+    private async Task HandleDownloadWorldBankAsync()
+    {
+        if (!_authService.IsAdminFromToken(_jwtToken))
+        {
+            AnsiConsole.MarkupLine("[red]Błąd: Twój token JWT nie posiada uprawnień Admina. Odmowa dostępu.[/]");
+            WaitForKey();
+            return;
+        }
+
+        await AnsiConsole.Status()
+            .StartAsync("Pobieranie danych z World Bank REST API...", async ctx => 
+            {
+                var newData = await _wbApiService.FetchMilitaryDataAsync();
+                ctx.Status("Zapis do bazy (Transakcja Serializable)...");
+                await _dbService.SaveExpendituresAsync(newData, "WorldBank");
+            });
+        
+        AnsiConsole.MarkupLine("[green]Zakończono sukcesem! Dane World Bank zostały zaktualizowane.[/]");
         WaitForKey();
     }
 
@@ -146,7 +169,7 @@ public class UiManager
         var data = await _dbService.GetExpendituresAsync();
         if (!data.Any())
         {
-            AnsiConsole.MarkupLine("[yellow]Brak danych w bazie. Użyj opcji pobierania.[/]");
+            AnsiConsole.MarkupLine("[yellow]Brak danych w bazie. Użyj opcji 1 lub 2.[/]");
         }
         else
         {
@@ -165,79 +188,33 @@ public class UiManager
             return;
         }
 
-        var chartType = AnsiConsole.Prompt(
+        var countries = allData.Select(d => d.CountryCode).Distinct().OrderBy(c => c).ToList();
+        var selectedCountry = AnsiConsole.Prompt(
             new SelectionPrompt<string>()
-                .Title("[yellow]Jaki rodzaj analizy chcesz przeprowadzić?[/]")
-                .AddChoices(new[] {
-                    "A. Historia wydatków na przestrzeni lat (Dla 1 kraju)",
-                    "B. Porównanie wielu krajów w jednym roku",
-                    "C. Powrót"
-                }));
+                .Title("Wybierz [green]kraj[/] do analizy historycznej:")
+                .PageSize(10)
+                .AddChoices(countries));
 
-        if (chartType.StartsWith("C")) return;
+        var countryData = allData
+            .Where(d => d.CountryCode == selectedCountry)
+            .OrderBy(d => d.Year)
+            .ThenBy(d => d.DataSource)
+            .ToList();
 
-        if (chartType.StartsWith("A"))
+        var chart = new BarChart()
+            .Width(90)
+            .Label($"[green bold]Wydatki {selectedCountry} - Eurostat (Niebieski) vs WorldBank (Różowy)[/]")
+            .CenterLabel();
+
+        foreach (var item in countryData)
         {
-            var countries = allData.Select(d => d.CountryCode).Distinct().OrderBy(c => c).ToList();
-            var selectedCountry = AnsiConsole.Prompt(
-                new SelectionPrompt<string>()
-                    .Title("Wybierz [green]kraj[/] (użyj strzałek):")
-                    .PageSize(10)
-                    .AddChoices(countries));
-
-            var countryData = allData.Where(d => d.CountryCode == selectedCountry).OrderBy(d => d.Year).ToList();
-
-            var chart = new BarChart()
-                .Width(80)
-                .Label($"[green bold]Wydatki {selectedCountry} (% PKB) na przestrzeni lat[/]")
-                .CenterLabel();
-
-            foreach (var item in countryData)
-            {
-                chart.AddItem(item.Year.ToString(), Math.Round((double)item.PercentageOfGdp, 2), Color.SteelBlue);
-            }
-
-            AnsiConsole.Write(chart);
-        }
-        else if (chartType.StartsWith("B"))
-        {
-            var years = allData.Select(d => d.Year.ToString()).Distinct().OrderByDescending(y => y).ToList();
-            var selectedYearStr = AnsiConsole.Prompt(
-                new SelectionPrompt<string>()
-                    .Title("Wybierz [green]rok[/] do porównania:")
-                    .PageSize(10)
-                    .AddChoices(years));
-
-            int selectedYear = int.Parse(selectedYearStr);
-            var countriesInYear = allData.Where(d => d.Year == selectedYear).Select(d => d.CountryCode).Distinct().OrderBy(c => c).ToList();
-
-            var selectedCountries = AnsiConsole.Prompt(
-                new MultiSelectionPrompt<string>()
-                    .Title($"Wybierz [green]kraje[/] do porównania (Spacja zaznacza, Enter zatwierdza):")
-                    .PageSize(15)
-                    .Required()
-                    .InstructionsText("[grey](Spacja przełącza wybór, Enter zatwierdza zaznaczone)[/]")
-                    .AddChoices(countriesInYear));
-
-            var chartData = allData.Where(d => d.Year == selectedYear && selectedCountries.Contains(d.CountryCode)).OrderByDescending(d => d.PercentageOfGdp).ToList();
-
-            var chart = new BarChart()
-                .Width(80)
-                .Label($"[green bold]Porównanie wydatków (% PKB) w {selectedYear} roku[/]")
-                .CenterLabel();
-
-            var colors = new[] { Color.Red, Color.Green, Color.Yellow, Color.Magenta, Color.Cyan, Color.DarkOrange };
-            int colorIdx = 0;
-
-            foreach (var item in chartData)
-            {
-                chart.AddItem(item.CountryCode, Math.Round((double)item.PercentageOfGdp, 2), colors[colorIdx % colors.Length]);
-                colorIdx++;
-            }
-
-            AnsiConsole.Write(chart);
+            Color barColor = item.DataSource == "Eurostat" ? Color.SteelBlue : Color.Fuchsia;
+            string shortSource = item.DataSource == "Eurostat" ? "EU" : "WB";
+            
+            chart.AddItem($"{item.Year} ({shortSource})", Math.Round((double)item.PercentageOfGdp, 2), barColor);
         }
 
+        AnsiConsole.Write(chart);
         WaitForKey();
     }
 
@@ -259,21 +236,20 @@ public class UiManager
 
     private async Task HandleImportJsonAsync()
     {
-        if (!_authService.IsAdminFromToken(_jwtToken))
-        {
-            AnsiConsole.MarkupLine("[red]Błąd: Twój token JWT nie posiada uprawnień Admina. Odmowa dostępu.[/]");
-            WaitForKey();
-            return;
-        }
+        if (!_authService.IsAdminFromToken(_jwtToken)) { WaitForKey(); return; }
 
         try
         {
             var importedData = _fileTransferService.ImportFromJson();
             await AnsiConsole.Status().StartAsync("Odtwarzanie bazy z pliku JSON...", async ctx => 
             {
-                await _dbService.SaveExpendituresAsync(importedData);
+                // Grupowanie pozwala zapisać niezależnie dane z Eurostatu i WorldBanku w osobnych transakcjach
+                foreach (var sourceGroup in importedData.GroupBy(d => d.DataSource))
+                {
+                    await _dbService.SaveExpendituresAsync(sourceGroup.ToList(), sourceGroup.Key);
+                }
             });
-            AnsiConsole.MarkupLine($"[green]Sukces! Zaimportowano {importedData.Count} rekordów z pliku JSON do bazy danych.[/]");
+            AnsiConsole.MarkupLine($"[green]Sukces! Zaimportowano {importedData.Count} rekordów z pliku JSON.[/]");
         }
         catch (FileNotFoundException ex)
         {
@@ -284,21 +260,19 @@ public class UiManager
 
     private async Task HandleImportXmlAsync()
     {
-        if (!_authService.IsAdminFromToken(_jwtToken))
-        {
-            AnsiConsole.MarkupLine("[red]Błąd: Twój token JWT nie posiada uprawnień Admina. Odmowa dostępu.[/]");
-            WaitForKey();
-            return;
-        }
+        if (!_authService.IsAdminFromToken(_jwtToken)) { WaitForKey(); return; }
 
         try
         {
             var importedData = _fileTransferService.ImportFromXml();
             await AnsiConsole.Status().StartAsync("Odtwarzanie bazy z pliku XML...", async ctx => 
             {
-                await _dbService.SaveExpendituresAsync(importedData);
+                foreach (var sourceGroup in importedData.GroupBy(d => d.DataSource))
+                {
+                    await _dbService.SaveExpendituresAsync(sourceGroup.ToList(), sourceGroup.Key);
+                }
             });
-            AnsiConsole.MarkupLine($"[green]Sukces! Zaimportowano {importedData.Count} rekordów z pliku XML do bazy danych.[/]");
+            AnsiConsole.MarkupLine($"[green]Sukces! Zaimportowano {importedData.Count} rekordów z pliku XML.[/]");
         }
         catch (FileNotFoundException ex)
         {
@@ -306,7 +280,7 @@ public class UiManager
         }
         WaitForKey();
     }
-    
+
     private async Task HandleSoapRequestAsync()
     {
         var countryCode = AnsiConsole.Ask<string>("Podaj 2-literowy [green]kod państwa[/] (np. PL, DE, FR):").ToUpper();
@@ -344,22 +318,30 @@ public class UiManager
 
     private void RenderDataTable(List<MilitaryExpenditure> data)
     {
-        var table = new Table();
-        table.Border = TableBorder.Rounded;
+        var table = new Table().Border(TableBorder.Rounded);
         table.AddColumn("[yellow]ID[/]");
-        table.AddColumn("[yellow]Kraj (Kod)[/]");
+        table.AddColumn("[yellow]Źródło[/]");
+        table.AddColumn("[yellow]Kraj[/]");
         table.AddColumn(new TableColumn("[yellow]Rok[/]").Centered());
         table.AddColumn(new TableColumn("[yellow]Wydatki (% PKB)[/]").RightAligned());
 
-        foreach (var item in data.Take(20))
+        // Pokazujemy do 25 rekordów
+        foreach (var item in data.Take(25))
         {
-            table.AddRow(item.Id.ToString(), item.CountryCode, item.Year.ToString(), $"[green]{item.PercentageOfGdp:0.00}%[/]");
+            string sourceColor = item.DataSource == "Eurostat" ? "blue" : "fuchsia";
+            table.AddRow(
+                item.Id.ToString(), 
+                $"[{sourceColor}]{item.DataSource}[/]", 
+                item.CountryCode, 
+                item.Year.ToString(), 
+                $"[green]{item.PercentageOfGdp:0.00}%[/]"
+            );
         }
 
         AnsiConsole.Write(table);
-        if (data.Count > 20)
+        if (data.Count > 25)
         {
-            AnsiConsole.MarkupLine($"[grey]... i {data.Count - 20} więcej w bazie.[/]");
+            AnsiConsole.MarkupLine($"[grey]... i {data.Count - 25} więcej w bazie.[/]");
         }
     }
 
