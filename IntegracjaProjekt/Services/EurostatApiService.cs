@@ -59,6 +59,7 @@ public class EurostatApiService
                     CountryCode = columns[geoIdx].Trim(),
                     Year = int.Parse(columns[timeIdx].Trim()),
                     PercentageOfGdp = value,
+                    DataSource = "Eurostat",
                     DownloadedAt = DateTime.Now
                 });
             }
