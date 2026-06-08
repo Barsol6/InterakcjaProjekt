@@ -1,3 +1,4 @@
+using System.Net;
 using IntegracjaProjekt.Models;
 
 namespace IntegracjaProjekt.Services;
@@ -8,16 +9,18 @@ public class EurostatApiService
 
     public EurostatApiService()
     {
-        _httpClient = new HttpClient();
-        
-  
+        var handler = new HttpClientHandler
+        {
+            AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate
+        };
+        _httpClient = new HttpClient(handler);
         _httpClient.DefaultRequestHeaders.Add("User-Agent", "EurostatApp/1.0 (Student Project)");
     }
 
     public async Task<List<MilitaryExpenditure>> FetchMilitaryDataAsync()
     {
-      
-        string url = "https://ec.europa.eu/eurostat/api/dissemination/sdmx/2.1/data/gov_10a_exp/A.PC_GDP.S13.GF02.TE.?format=SDMX-CSV&startPeriod=2010";
+        string url = "https://ec.europa.eu/eurostat/api/dissemination/sdmx/2.1/data/gov_10a_exp/A.PC_GDP.S13.GF02.TE.?format=SDMX-CSV&startPeriod=2010&endPeriod=2020";
+        
         HttpResponseMessage response = await _httpClient.GetAsync(url);
         
         if (!response.IsSuccessStatusCode)
@@ -35,7 +38,7 @@ public class EurostatApiService
         var results = new List<MilitaryExpenditure>();
         var lines = csvData.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
         
-        if (lines.Length == 0) return results;
+        if (lines.Length <= 1) return results;
 
         var header = lines[0].Split(',');
         int geoIdx = Array.IndexOf(header, "geo");
@@ -43,7 +46,7 @@ public class EurostatApiService
         int valIdx = Array.IndexOf(header, "OBS_VALUE");
 
         if (geoIdx == -1 || timeIdx == -1 || valIdx == -1)
-            throw new Exception("Nieprawidłowy format danych z Eurostatu. Brakuje wymaganych kolumn.");
+            throw new Exception("Nieprawidłowy format danych z Eurostatu.");
 
         for (int i = 1; i < lines.Length; i++)
         {
@@ -52,18 +55,32 @@ public class EurostatApiService
             if (columns.Length <= valIdx || string.IsNullOrWhiteSpace(columns[valIdx]))
                 continue;
 
-            if (decimal.TryParse(columns[valIdx], System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out decimal value))
+            string rawValue = columns[valIdx].Trim();
+            // Usunięcie liter Eurostatu (np. "1.5 p" - dane przewidywane)
+            string numberPart = new string(rawValue.TakeWhile(ch => char.IsDigit(ch) || ch == '.').ToArray());
+
+            if (decimal.TryParse(numberPart, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out decimal value))
             {
+                string geoCode = columns[geoIdx].Trim();
+                
                 results.Add(new MilitaryExpenditure
                 {
-                    CountryCode = columns[geoIdx].Trim(),
+                    CountryCode = NormalizeCountryCode(geoCode),
                     Year = int.Parse(columns[timeIdx].Trim()),
                     PercentageOfGdp = value,
+                    DataSource = "Eurostat",
                     DownloadedAt = DateTime.Now
                 });
             }
         }
 
         return results;
+    }
+
+    private string NormalizeCountryCode(string code)
+    {
+        if (code == "EL") return "GR"; 
+        if (code == "UK") return "GB"; 
+        return code;
     }
 }

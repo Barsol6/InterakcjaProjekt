@@ -40,7 +40,7 @@ public class UiManager
                 .Color(Color.Blue));
         AnsiConsole.Write(
             new Align(
-                new Markup("[bold grey]Wydatki Wojskowe - Eurostat, World Bank & SOAP API[/]\n"), 
+                new Markup("[bold grey]Wojsko: Eurostat (Wydatki), World Bank (Kadry) & SOAP API[/]\n"), 
                 HorizontalAlignment.Center
             ));
     }
@@ -87,10 +87,10 @@ public class UiManager
                     .Title("[yellow]Wybierz akcję z systemu rozproszonego:[/]")
                     .PageSize(12)
                     .AddChoices(new[] {
-                        "1. Pobierz nowe dane (EUROSTAT REST API)",
-                        "2. Pobierz nowe dane (WORLD BANK REST API)",
+                        "1. Pobierz dane z EUROSTAT (Wydatki budżetowe % PKB)",
+                        "2. Pobierz dane z WORLD BANK (Personel wojskowy % siły rob.)",
                         "3. Przeglądaj połączone dane z bazy (Tabela)",
-                        "4. Generuj WYKRESY (Porównanie Eurostat vs WorldBank)",
+                        "4. Generuj WYKRESY (Wydatki Eurostat vs Kadry World Bank)",
                         "5. Eksportuj całą bazę do pliku JSON",
                         "6. Eksportuj całą bazę do pliku XML",
                         "7. Importuj dane z JSON -> Odtwórz w bazie",
@@ -120,8 +120,6 @@ public class UiManager
         }
     }
 
-    // --- LOGIKA AKCJI MENU ---
-
     private async Task HandleDownloadEurostatAsync()
     {
         if (!_authService.IsAdminFromToken(_jwtToken))
@@ -139,7 +137,7 @@ public class UiManager
                 await _dbService.SaveExpendituresAsync(newData, "Eurostat");
             });
         
-        AnsiConsole.MarkupLine("[green]Zakończono sukcesem! Dane Eurostat zostały zaktualizowane.[/]");
+        AnsiConsole.MarkupLine("[green]Zakończono sukcesem! Dane Eurostat (Wydatki Budżetowe) zostały zaktualizowane.[/]");
         WaitForKey();
     }
 
@@ -160,7 +158,7 @@ public class UiManager
                 await _dbService.SaveExpendituresAsync(newData, "WorldBank");
             });
         
-        AnsiConsole.MarkupLine("[green]Zakończono sukcesem! Dane World Bank zostały zaktualizowane.[/]");
+        AnsiConsole.MarkupLine("[green]Zakończono sukcesem! Dane World Bank (Personel Wojskowy) zostały zaktualizowane.[/]");
         WaitForKey();
     }
 
@@ -203,15 +201,17 @@ public class UiManager
 
         var chart = new BarChart()
             .Width(90)
-            .Label($"[green bold]Wydatki {selectedCountry} - Eurostat (Niebieski) vs WorldBank (Różowy)[/]")
+            .Label($"[green bold]{selectedCountry} - Eurostat (% PKB na wojsko) vs WorldBank (% personelu wojskowego)[/]")
             .CenterLabel();
 
         foreach (var item in countryData)
         {
             Color barColor = item.DataSource == "Eurostat" ? Color.SteelBlue : Color.Fuchsia;
-            string shortSource = item.DataSource == "Eurostat" ? "EU" : "WB";
             
-            chart.AddItem($"{item.Year} ({shortSource})", Math.Round((double)item.PercentageOfGdp, 2), barColor);
+            // Poprawione etykiety - EU to teraz PKB (wydatki), WB to teraz Kadry (personel)
+            string shortSource = item.DataSource == "Eurostat" ? "EU(PKB)" : "WB(Kadry)";
+            
+            chart.AddItem($"{item.Year} {shortSource}", Math.Round((double)item.PercentageOfGdp, 3), barColor);
         }
 
         AnsiConsole.Write(chart);
@@ -243,7 +243,6 @@ public class UiManager
             var importedData = _fileTransferService.ImportFromJson();
             await AnsiConsole.Status().StartAsync("Odtwarzanie bazy z pliku JSON...", async ctx => 
             {
-                // Grupowanie pozwala zapisać niezależnie dane z Eurostatu i WorldBanku w osobnych transakcjach
                 foreach (var sourceGroup in importedData.GroupBy(d => d.DataSource))
                 {
                     await _dbService.SaveExpendituresAsync(sourceGroup.ToList(), sourceGroup.Key);
@@ -280,7 +279,7 @@ public class UiManager
         }
         WaitForKey();
     }
-
+    
     private async Task HandleSoapRequestAsync()
     {
         var countryCode = AnsiConsole.Ask<string>("Podaj 2-literowy [green]kod państwa[/] (np. PL, DE, FR):").ToUpper();
@@ -315,7 +314,6 @@ public class UiManager
         WaitForKey();
     }
 
-
     private void RenderDataTable(List<MilitaryExpenditure> data)
     {
         var table = new Table().Border(TableBorder.Rounded);
@@ -323,10 +321,9 @@ public class UiManager
         table.AddColumn("[yellow]Źródło[/]");
         table.AddColumn("[yellow]Kraj[/]");
         table.AddColumn(new TableColumn("[yellow]Rok[/]").Centered());
-        table.AddColumn(new TableColumn("[yellow]Wydatki (% PKB)[/]").RightAligned());
+        table.AddColumn(new TableColumn("[yellow]Wartość (%)[/]").RightAligned());
 
-        // Pokazujemy do 25 rekordów
-        foreach (var item in data.Take(25))
+        foreach (var item in data)
         {
             string sourceColor = item.DataSource == "Eurostat" ? "blue" : "fuchsia";
             table.AddRow(
@@ -334,7 +331,7 @@ public class UiManager
                 $"[{sourceColor}]{item.DataSource}[/]", 
                 item.CountryCode, 
                 item.Year.ToString(), 
-                $"[green]{item.PercentageOfGdp:0.00}%[/]"
+                $"[green]{item.PercentageOfGdp:0.000}%[/]"
             );
         }
 
