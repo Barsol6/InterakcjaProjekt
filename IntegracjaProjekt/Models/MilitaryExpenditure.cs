@@ -6,6 +6,6 @@ public class MilitaryExpenditure
     public string CountryCode { get; set; } = string.Empty;
     public int Year { get; set; }
     public decimal PercentageOfGdp { get; set; }
-    public string DataSource { get; set; } = "Eurostat"; 
+    public string DataSource { get; set; }
     public DateTime DownloadedAt { get; set; }
 }
